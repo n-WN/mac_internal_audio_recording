@@ -2,11 +2,41 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 
+// Global variables for signal handling
+var shouldStop = false
+var currentStream: SCStream?
+var currentWriter: AVAssetWriter?
+var currentAudioInput: AVAssetWriterInput?
+
+/// Handle SIGINT (Ctrl+C) gracefully
+func setupSignalHandler() {
+    signal(SIGINT) { _ in
+        print("\nReceived interrupt signal, stopping recording...")
+        shouldStop = true
+        
+        // Stop the stream and finalize the writer
+        Task {
+            if let stream = currentStream {
+                try? await stream.stopCapture()
+            }
+            if let input = currentAudioInput {
+                input.markAsFinished()
+            }
+            if let writer = currentWriter {
+                await writer.finishWriting()
+            }
+        }
+    }
+}
+
 /// Records system audio using ScreenCaptureKit
 /// - Parameters:
 ///   - outputPath: Path for the output audio file
 ///   - duration: Recording duration in seconds
 func recordAudio() async {
+    // Setup signal handler
+    setupSignalHandler()
+    
     do {
         let outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "audio.wav"
         let duration = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 10.0 : 10.0
@@ -31,10 +61,12 @@ func recordAudio() async {
         // Create content filter and stream
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+        currentStream = stream
         
         // Set up audio writer
         let url = URL(fileURLWithPath: outputPath)
         let writer = try AVAssetWriter(outputURL: url, fileType: .wav)
+        currentWriter = writer
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -49,6 +81,7 @@ func recordAudio() async {
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
         writer.add(audioInput)
+        currentAudioInput = audioInput
         
         // Start writing session
         writer.startWriting()
@@ -76,18 +109,30 @@ func recordAudio() async {
         // Start recording
         try await stream.startCapture()
         
-        // Wait for specified duration
-        try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        // Wait for specified duration or until interrupted
+        let startTime = Date()
+        while !shouldStop && Date().timeIntervalSince(startTime) < duration {
+            try await Task.sleep(nanoseconds: 100_000_000) // Sleep for 0.1 seconds
+        }
         
         // Stop recording and finalize
-        try await stream.stopCapture()
-        audioInput.markAsFinished()
-        await writer.finishWriting()
+        if !shouldStop {
+            try await stream.stopCapture()
+            audioInput.markAsFinished()
+            await writer.finishWriting()
+        }
         
         print("Recording complete. Audio saved to \(outputPath)")
         
     } catch {
         print("Error occurred: \(error)")
+        // Clean up on error
+        if let input = currentAudioInput {
+            input.markAsFinished()
+        }
+        if let writer = currentWriter {
+            await writer.finishWriting()
+        }
     }
 }
 
