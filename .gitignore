@@ -267,3 +267,7 @@ __marimo__/
 *.wav
 
 .DS_Store
+
+# Output folder
+output/
+*.wav
