@@ -132,7 +132,11 @@ If recordings are silent:
 
 ## License
 
-This project is open source. Please check the repository for license details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Author
+
+Created by [n-WN](https://github.com/n-WN)
 
 ## Limitations
 

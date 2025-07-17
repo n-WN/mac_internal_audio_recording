@@ -271,3 +271,4 @@ __marimo__/
 # Output folder
 output/
 *.wav
+recorder
