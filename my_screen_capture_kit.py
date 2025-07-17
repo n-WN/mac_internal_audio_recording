@@ -42,8 +42,11 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'swift_executable_error_stderr': "Swift Executable Error (stderr):\n",
         'unexpected_recording_error': "An unexpected error occurred during recording: {error}",
         'macos_audio_recording': "macOS audio recording",
-        'choose_option': "\n1. Try ScreenCaptureKit\n\nChoice: ",
-        'enter_duration_prompt': "Recording duration in seconds (default 10): ",
+        'choose_option': "\n1. Start recording\n\nChoice: ",
+        'enter_duration_prompt': "Recording duration in seconds (default: continuous until Ctrl+C): ",
+        'continuous_recording': "Press Enter for continuous recording, or enter duration in seconds: ",
+        'recording_started': "Recording started. Press Ctrl+C to stop and save.",
+        'recording_stopped': "Recording stopped by user.",
         'compiling_in_progress': "Compiling in progress...",
         'compilation_failed': "Compilation failed:\n{error}",
         'running_in_progress': "Running in progress...",
@@ -95,8 +98,11 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'swift_recording_complete_with_path': r"完成: {outputPath}",
         'swift_error_occurred': r"错误: {error}",
         'macos_audio_recording': "macOS 音频录制",
-        'choose_option': "\n1. 尝试ScreenCaptureKit\n\n选择: ",
-        'enter_duration_prompt': "录制秒数 (默认10) : ",
+        'choose_option': "\n1. 开始录制\n\n选择: ",
+        'enter_duration_prompt': "录制秒数 (默认: 持续录制直到 Ctrl+C): ",
+        'continuous_recording': "按回车键持续录制，或输入录制秒数: ",
+        'recording_started': "录制已开始。按 Ctrl+C 停止并保存。",
+        'recording_stopped': "用户停止录制。",
         'compiling_in_progress': "编译中...",
         'compilation_failed': "编译失败:\n{error}",
         'running_in_progress': "运行中...",
@@ -149,14 +155,25 @@ def get_duration_input() -> str:
     """Get recording duration from user input with validation.
     
     Returns:
-        Valid duration string
+        Valid duration string, or 'continuous' for continuous recording
         
     Raises:
         KeyboardInterrupt: When user interrupts input
     """
     try:
-        duration_input = input(get_message('enter_duration_prompt')).strip()
-        return duration_input or str(DEFAULT_DURATION)
+        duration_input = input(get_message('continuous_recording')).strip()
+        if not duration_input:
+            return 'continuous'
+        # Validate that it's a positive number
+        try:
+            duration = float(duration_input)
+            if duration <= 0:
+                print(get_message('duration_positive'))
+                return 'continuous'
+            return duration_input
+        except ValueError:
+            print(get_message('invalid_duration'))
+            return 'continuous'
     except KeyboardInterrupt:
         raise
 
@@ -209,19 +226,32 @@ def run_recording(output_file: str, duration: str) -> None:
     
     Args:
         output_file: Path for output audio file
-        duration: Recording duration in seconds
+        duration: Recording duration in seconds or 'continuous'
     """
-    print(get_message('running_in_progress'))
-    result = subprocess.run(
-        [f'./{RECORDER_EXECUTABLE}', output_file, duration],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        print(get_message('error_message', error=result.stderr))
+    if duration == 'continuous':
+        print(get_message('recording_started'))
+        try:
+            # Run with a very long duration, user will interrupt with Ctrl+C
+            subprocess.run(
+                [f'./{RECORDER_EXECUTABLE}', output_file, '86400'],  # 24 hours max
+                capture_output=False,  # Allow real-time output
+                text=True
+            )
+        except KeyboardInterrupt:
+            print(f"\n{get_message('recording_stopped')}")
+            # The Swift program should handle SIGINT gracefully
+            return
+    else:
+        print(get_message('running_in_progress'))
+        try:
+            subprocess.run(
+                [f'./{RECORDER_EXECUTABLE}', output_file, duration],
+                capture_output=False,
+                text=True
+            )
+        except KeyboardInterrupt:
+            print(f"\n{get_message('recording_stopped')}")
+            return
 
 
 def cleanup_files() -> None:
