@@ -171,12 +171,25 @@ def generate_output_filename() -> str:
     return f"recording_{timestamp}.wav"
 
 
-def compile_swift_code() -> bool:
-    """Compile Swift code to executable.
+def ensure_executable() -> bool:
+    """Ensure Swift executable exists, compile if necessary.
         
     Returns:
-        True if compilation successful, False otherwise
+        True if executable is available, False otherwise
     """
+    # Check if executable already exists and is newer than source
+    if os.path.exists(RECORDER_EXECUTABLE):
+        try:
+            exe_time = os.path.getmtime(RECORDER_EXECUTABLE)
+            src_time = os.path.getmtime(SWIFT_SOURCE_FILE)
+            
+            # If executable is newer than source, no need to recompile
+            if exe_time > src_time:
+                return True
+        except OSError:
+            pass  # If we can't check times, just recompile
+    
+    # Compile Swift code
     print(get_message('compiling_in_progress'))
     result = subprocess.run(
         [SWIFT_COMPILER, SWIFT_SOURCE_FILE, '-o', RECORDER_EXECUTABLE],
@@ -212,12 +225,18 @@ def run_recording(output_file: str, duration: str) -> None:
 
 
 def cleanup_files() -> None:
-    """Clean up generated executable."""
-    try:
-        if os.path.exists(RECORDER_EXECUTABLE):
-            os.remove(RECORDER_EXECUTABLE)
-    except OSError:
-        pass  # Ignore cleanup errors
+    """Clean up generated executable if needed.
+    
+    Note: By default, we keep the executable to avoid recompilation.
+    Only remove it if you specifically want to force recompilation.
+    """
+    # Uncomment the following lines if you want to clean up the executable
+    # try:
+    #     if os.path.exists(RECORDER_EXECUTABLE):
+    #         os.remove(RECORDER_EXECUTABLE)
+    # except OSError:
+    #     pass  # Ignore cleanup errors
+    pass
 
 
 def handle_user_input() -> str:
@@ -250,7 +269,7 @@ def main() -> None:
                 
                 verify_swift_source()
                 
-                if not compile_swift_code():
+                if not ensure_executable():
                     return
                 
                 run_recording(output_file, duration)
