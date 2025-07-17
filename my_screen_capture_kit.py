@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
+"""macOS audio recording utility using ScreenCaptureKit.
+
+This module provides a simple interface for recording system audio on macOS
+using Swift's ScreenCaptureKit framework with internationalization support.
+"""
+
 import subprocess
 import os
 from datetime import datetime
-import time
-import sys
 import locale
+from typing import Dict, Any
+
+# --- Configuration ---
+DEFAULT_DURATION = 10
+SWIFT_COMPILER = 'swiftc'
+RECORDER_EXECUTABLE = 'recorder'
+TEMPORARY_SWIFT_FILE = 'recorder.swift'
 
 # --- Internationalization (i18n) ---
-# Define messages for different languages
-MESSAGES = {
+MESSAGES: Dict[str, Dict[str, str]] = {
     'en': {
         'swift_source_written': "Swift source written to {output_path}",
         'compiling_swift_code': "Compiling Swift code: {command}",
@@ -92,75 +102,150 @@ MESSAGES = {
     }
 }
 
-def get_message(key, **kwargs):
-    """Get a translated message based on the current locale."""
-    # Get the user's preferred locale
+def get_message(key: str, **kwargs: Any) -> str:
+    """Get a translated message based on the current locale.
+    
+    Args:
+        key: The message key to look up
+        **kwargs: Format parameters for the message
+        
+    Returns:
+        Formatted message string in the appropriate language
+    """
     try:
         lang, _ = locale.getlocale()
         if lang is None:
             locale.setlocale(locale.LC_ALL, '')
             lang, _ = locale.getlocale()
-        # print(lang)
     except Exception:
         lang = 'en'
 
-    # Use the language part (e.g., 'en', 'zh')
     lang_code = lang.split('_')[0] if lang else 'en'
-
-
-
-    # Prioritize specific locale (e.g., 'zh_CN') then general language (e.g., 'zh')
-    # messages = MESSAGES.get(lang, MESSAGES.get(lang_code, MESSAGES['en']))
     messages = MESSAGES.get(lang_code, MESSAGES['en'])
     
     message = messages.get(key, MESSAGES['en'].get(key, f"MISSING_TRANSLATION_{key}"))
     return message.format(**kwargs)
 
-# --- Configuration ---
-
-def create_swift_recorder():
-    """创建最简单的Swift录制脚本"""
-    swift_code = open('core.swift', 'r').read()
+def create_swift_recorder() -> str:
+    """Create Swift recorder script from core.swift template.
     
-    with open('recorder.swift', 'w') as f:
-        f.write(swift_code)
+    Returns:
+        Path to the created Swift file
+        
+    Raises:
+        FileNotFoundError: If core.swift template is not found
+        IOError: If unable to write temporary Swift file
+    """
+    try:
+        with open('core.swift', 'r', encoding='utf-8') as f:
+            swift_code = f.read()
+        
+        with open(TEMPORARY_SWIFT_FILE, 'w', encoding='utf-8') as f:
+            f.write(swift_code)
+        
+        return TEMPORARY_SWIFT_FILE
+    except FileNotFoundError:
+        raise FileNotFoundError("core.swift template file not found")
+    except IOError as e:
+        raise IOError(f"Failed to create Swift recorder file: {e}")
+
+
+def get_duration_input() -> str:
+    """Get recording duration from user input with validation.
     
-    return 'recorder.swift'
+    Returns:
+        Valid duration string
+    """
+    duration_input = input(get_message('enter_duration_prompt')).strip()
+    return duration_input or str(DEFAULT_DURATION)
 
 
-def main():
+def generate_output_filename() -> str:
+    """Generate timestamped output filename.
+    
+    Returns:
+        Filename with timestamp
+    """
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return f"recording_{timestamp}.wav"
+
+
+def compile_swift_code(swift_file: str) -> bool:
+    """Compile Swift code to executable.
+    
+    Args:
+        swift_file: Path to Swift source file
+        
+    Returns:
+        True if compilation successful, False otherwise
+    """
+    print(get_message('compiling_in_progress'))
+    result = subprocess.run(
+        [SWIFT_COMPILER, swift_file, '-o', RECORDER_EXECUTABLE],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        print(get_message('compilation_failed', error=result.stderr))
+        return False
+    
+    return True
+
+
+def run_recording(output_file: str, duration: str) -> None:
+    """Run the audio recording process.
+    
+    Args:
+        output_file: Path for output audio file
+        duration: Recording duration in seconds
+    """
+    print(get_message('running_in_progress'))
+    result = subprocess.run(
+        [f'./{RECORDER_EXECUTABLE}', output_file, duration],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(get_message('error_message', error=result.stderr))
+
+
+def cleanup_files() -> None:
+    """Clean up temporary files."""
+    for file in [TEMPORARY_SWIFT_FILE, RECORDER_EXECUTABLE]:
+        try:
+            if os.path.exists(file):
+                os.remove(file)
+        except OSError:
+            pass  # Ignore cleanup errors
+
+
+def main() -> None:
+    """Main application entry point."""
     print(get_message('macos_audio_recording'))
-    print("="*40)
+    print("=" * 40)
     
     choice = input(get_message('choose_option'))
     
     if choice == "1":
-        duration = input(get_message('enter_duration_prompt')).strip() or "10"
-        output = f"recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-        
-        # 创建并编译Swift代码
-        swift_file = create_swift_recorder()
-        
-        print(get_message('compiling_in_progress'))
-        result = subprocess.run(['swiftc', swift_file, '-o', 'recorder'], 
-                              capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(get_message('compilation_failed', error=result.stderr))
-            os.remove(swift_file)
-            return
-        
-        print(get_message('running_in_progress'))
-        result = subprocess.run(['./recorder', output, duration], 
-                              capture_output=True, text=True)
-        
-        print(result.stdout)
-        if result.stderr:
-            print(get_message('error_message', error=result.stderr))
+        try:
+            duration = get_duration_input()
+            output_file = generate_output_filename()
             
-        # 清理
-        os.remove(swift_file)
-        os.remove('recorder')
+            swift_file = create_swift_recorder()
+            
+            if not compile_swift_code(swift_file):
+                return
+            
+            run_recording(output_file, duration)
+            
+        except (FileNotFoundError, IOError) as e:
+            print(get_message('error_message', error=str(e)))
+        finally:
+            cleanup_files()
         
 
 if __name__ == "__main__":
