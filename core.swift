@@ -1,3 +1,21 @@
+//
+//  core.swift
+//  macOS Internal Audio Recording
+//
+//  A Swift implementation for recording system audio and microphone input
+//  using ScreenCaptureKit and AVFoundation frameworks.
+//
+//  Copyright (c) 2025 n-WN
+//  Repository: https://github.com/n-WN/mac_internal_audio_recording
+//
+//  This program is free software: you can redistribute it and/or modify
+//  it under the terms of the MIT License.
+//
+//  This program is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+//
+
 import Foundation
 import ScreenCaptureKit
 import AVFoundation

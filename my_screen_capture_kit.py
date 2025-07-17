@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
-"""macOS audio recording utility using ScreenCaptureKit.
+# -*- coding: utf-8 -*-
+"""
+macOS Internal Audio Recording
 
-This module provides a simple interface for recording system audio on macOS
-using Swift's ScreenCaptureKit framework with internationalization support.
+A simple command-line tool for recording internal audio, microphone input, 
+or both simultaneously on macOS using ScreenCaptureKit.
+
+Copyright (c) 2025 n-WN
+Repository: https://github.com/n-WN/mac_internal_audio_recording
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the MIT License.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 """
 
 import subprocess
