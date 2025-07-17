@@ -15,7 +15,7 @@ from typing import Dict, Any
 DEFAULT_DURATION = 10
 SWIFT_COMPILER = 'swiftc'
 RECORDER_EXECUTABLE = 'recorder'
-TEMPORARY_SWIFT_FILE = 'recorder.swift'
+SWIFT_SOURCE_FILE = 'core.swift'
 
 # --- Internationalization (i18n) ---
 MESSAGES: Dict[str, Dict[str, str]] = {
@@ -126,28 +126,19 @@ def get_message(key: str, **kwargs: Any) -> str:
     message = messages.get(key, MESSAGES['en'].get(key, f"MISSING_TRANSLATION_{key}"))
     return message.format(**kwargs)
 
-def create_swift_recorder() -> str:
-    """Create Swift recorder script from core.swift template.
+def verify_swift_source() -> str:
+    """Verify Swift source file exists.
     
     Returns:
-        Path to the created Swift file
+        Path to the Swift source file
         
     Raises:
-        FileNotFoundError: If core.swift template is not found
-        IOError: If unable to write temporary Swift file
+        FileNotFoundError: If core.swift is not found
     """
-    try:
-        with open('core.swift', 'r', encoding='utf-8') as f:
-            swift_code = f.read()
-        
-        with open(TEMPORARY_SWIFT_FILE, 'w', encoding='utf-8') as f:
-            f.write(swift_code)
-        
-        return TEMPORARY_SWIFT_FILE
-    except FileNotFoundError:
-        raise FileNotFoundError("core.swift template file not found")
-    except IOError as e:
-        raise IOError(f"Failed to create Swift recorder file: {e}")
+    if not os.path.exists(SWIFT_SOURCE_FILE):
+        raise FileNotFoundError(f"{SWIFT_SOURCE_FILE} not found")
+    
+    return SWIFT_SOURCE_FILE
 
 
 def get_duration_input() -> str:
@@ -170,18 +161,15 @@ def generate_output_filename() -> str:
     return f"recording_{timestamp}.wav"
 
 
-def compile_swift_code(swift_file: str) -> bool:
+def compile_swift_code() -> bool:
     """Compile Swift code to executable.
-    
-    Args:
-        swift_file: Path to Swift source file
         
     Returns:
         True if compilation successful, False otherwise
     """
     print(get_message('compiling_in_progress'))
     result = subprocess.run(
-        [SWIFT_COMPILER, swift_file, '-o', RECORDER_EXECUTABLE],
+        [SWIFT_COMPILER, SWIFT_SOURCE_FILE, '-o', RECORDER_EXECUTABLE],
         capture_output=True,
         text=True
     )
@@ -214,13 +202,12 @@ def run_recording(output_file: str, duration: str) -> None:
 
 
 def cleanup_files() -> None:
-    """Clean up temporary files."""
-    for file in [TEMPORARY_SWIFT_FILE, RECORDER_EXECUTABLE]:
-        try:
-            if os.path.exists(file):
-                os.remove(file)
-        except OSError:
-            pass  # Ignore cleanup errors
+    """Clean up generated executable."""
+    try:
+        if os.path.exists(RECORDER_EXECUTABLE):
+            os.remove(RECORDER_EXECUTABLE)
+    except OSError:
+        pass  # Ignore cleanup errors
 
 
 def main() -> None:
@@ -235,14 +222,14 @@ def main() -> None:
             duration = get_duration_input()
             output_file = generate_output_filename()
             
-            swift_file = create_swift_recorder()
+            verify_swift_source()
             
-            if not compile_swift_code(swift_file):
+            if not compile_swift_code():
                 return
             
             run_recording(output_file, duration)
             
-        except (FileNotFoundError, IOError) as e:
+        except FileNotFoundError as e:
             print(get_message('error_message', error=str(e)))
         finally:
             cleanup_files()
