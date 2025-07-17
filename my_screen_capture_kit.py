@@ -48,6 +48,8 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'compilation_failed': "Compilation failed:\n{error}",
         'running_in_progress': "Running in progress...",
         'error_message': "Error: {error}",
+        'user_interrupted': "User interrupted",
+        'goodbye': "Goodbye!",
         # Swift template messages
         'swift_no_display': "No display found to capture.",
         'swift_cannot_add_writer_input': "Cannot add asset writer input.",
@@ -98,7 +100,9 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'compiling_in_progress': "编译中...",
         'compilation_failed': "编译失败:\n{error}",
         'running_in_progress': "运行中...",
-        'error_message': "错误: {error}"
+        'error_message': "错误: {error}",
+        'user_interrupted': "用户中断操作",
+        'goodbye': "再见！"
     }
 }
 
@@ -146,9 +150,15 @@ def get_duration_input() -> str:
     
     Returns:
         Valid duration string
+        
+    Raises:
+        KeyboardInterrupt: When user interrupts input
     """
-    duration_input = input(get_message('enter_duration_prompt')).strip()
-    return duration_input or str(DEFAULT_DURATION)
+    try:
+        duration_input = input(get_message('enter_duration_prompt')).strip()
+        return duration_input or str(DEFAULT_DURATION)
+    except KeyboardInterrupt:
+        raise
 
 
 def generate_output_filename() -> str:
@@ -210,30 +220,54 @@ def cleanup_files() -> None:
         pass  # Ignore cleanup errors
 
 
+def handle_user_input() -> str:
+    """Handle user input with graceful interrupt handling.
+    
+    Returns:
+        User's choice
+        
+    Raises:
+        KeyboardInterrupt: When user interrupts input
+    """
+    try:
+        return input(get_message('choose_option'))
+    except KeyboardInterrupt:
+        raise
+
+
 def main() -> None:
     """Main application entry point."""
-    print(get_message('macos_audio_recording'))
-    print("=" * 40)
-    
-    choice = input(get_message('choose_option'))
-    
-    if choice == "1":
-        try:
-            duration = get_duration_input()
-            output_file = generate_output_filename()
-            
-            verify_swift_source()
-            
-            if not compile_swift_code():
-                return
-            
-            run_recording(output_file, duration)
-            
-        except FileNotFoundError as e:
-            print(get_message('error_message', error=str(e)))
-        finally:
-            cleanup_files()
+    try:
+        print(get_message('macos_audio_recording'))
+        print("=" * 40)
+        
+        choice = handle_user_input()
+        
+        if choice == "1":
+            try:
+                duration = get_duration_input()
+                output_file = generate_output_filename()
+                
+                verify_swift_source()
+                
+                if not compile_swift_code():
+                    return
+                
+                run_recording(output_file, duration)
+                
+            except FileNotFoundError as e:
+                print(get_message('error_message', error=str(e)))
+            finally:
+                cleanup_files()
+                
+    except KeyboardInterrupt:
+        print(f"\n{get_message('user_interrupted')}")
+        print(get_message('goodbye'))
         
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Handle any remaining KeyboardInterrupt at the top level
+        pass
