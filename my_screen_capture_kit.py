@@ -16,6 +16,7 @@ DEFAULT_DURATION = 10
 SWIFT_COMPILER = 'swiftc'
 RECORDER_EXECUTABLE = 'recorder'
 SWIFT_SOURCE_FILE = 'core.swift'
+OUTPUT_FOLDER = 'output'
 
 # --- Internationalization (i18n) ---
 MESSAGES: Dict[str, Dict[str, str]] = {
@@ -42,7 +43,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'swift_executable_error_stderr': "Swift Executable Error (stderr):\n",
         'unexpected_recording_error': "An unexpected error occurred during recording: {error}",
         'macos_audio_recording': "macOS audio recording",
-        'choose_option': "\n1. Start recording\n\nChoice: ",
+        'choose_option': "\n1. Record internal audio only\n2. Record microphone only\n3. Record both (internal + microphone)\n\nChoice: ",
         'enter_duration_prompt': "Recording duration in seconds (default: continuous until Ctrl+C): ",
         'continuous_recording': "Press Enter for continuous recording, or enter duration in seconds: ",
         'recording_started': "Recording started. Press Ctrl+C to stop and save.",
@@ -53,6 +54,10 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'error_message': "Error: {error}",
         'user_interrupted': "User interrupted",
         'goodbye': "Goodbye!",
+        'recording_started_internal': "Recording internal audio. Press Ctrl+C to stop and save.",
+        'recording_started_microphone': "Recording microphone. Press Ctrl+C to stop and save.",
+        'recording_started_both': "Recording both internal audio and microphone. Press Ctrl+C to stop and save.",
+        'output_folder_created': "Created output folder: {folder}",
         # Swift template messages
         'swift_no_display': "No display found to capture.",
         'swift_cannot_add_writer_input': "Cannot add asset writer input.",
@@ -98,7 +103,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'swift_recording_complete_with_path': r"完成: {outputPath}",
         'swift_error_occurred': r"错误: {error}",
         'macos_audio_recording': "macOS 音频录制",
-        'choose_option': "\n1. 开始录制\n\n选择: ",
+        'choose_option': "\n1. 仅录制内部音频\n2. 仅录制麦克风\n3. 同时录制两者 (内部+麦克风)\n\n选择: ",
         'enter_duration_prompt': "录制秒数 (默认: 持续录制直到 Ctrl+C): ",
         'continuous_recording': "按回车键持续录制，或输入录制秒数: ",
         'recording_started': "录制已开始。按 Ctrl+C 停止并保存。",
@@ -108,7 +113,11 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         'running_in_progress': "运行中...",
         'error_message': "错误: {error}",
         'user_interrupted': "用户中断操作",
-        'goodbye': "再见！"
+        'goodbye': "再见！",
+        'recording_started_internal': "正在录制内部音频。按 Ctrl+C 停止并保存。",
+        'recording_started_microphone': "正在录制麦克风。按 Ctrl+C 停止并保存。",
+        'recording_started_both': "正在同时录制内部音频和麦克风。按 Ctrl+C 停止并保存。",
+        'output_folder_created': "已创建输出文件夹: {folder}"
     }
 }
 
@@ -178,14 +187,23 @@ def get_duration_input() -> str:
         raise
 
 
+def ensure_output_folder() -> None:
+    """Ensure output folder exists."""
+    if not os.path.exists(OUTPUT_FOLDER):
+        os.makedirs(OUTPUT_FOLDER)
+        print(get_message('output_folder_created', folder=OUTPUT_FOLDER))
+
+
 def generate_output_filename() -> str:
-    """Generate timestamped output filename.
+    """Generate timestamped output filename with full path.
     
     Returns:
-        Filename with timestamp
+        Full path to output file in output folder
     """
+    ensure_output_folder()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    return f"recording_{timestamp}.wav"
+    filename = f"recording_{timestamp}.wav"
+    return os.path.join(OUTPUT_FOLDER, filename)
 
 
 def ensure_executable() -> bool:
@@ -221,19 +239,30 @@ def ensure_executable() -> bool:
     return True
 
 
-def run_recording(output_file: str, duration: str) -> None:
+def run_recording(output_file: str, duration: str, recording_type: str) -> None:
     """Run the audio recording process.
     
     Args:
         output_file: Path for output audio file
         duration: Recording duration in seconds or 'continuous'
+        recording_type: Type of recording ('internal', 'microphone', 'both')
     """
+    # Show appropriate message based on recording type
+    if recording_type == 'internal':
+        message_key = 'recording_started_internal'
+    elif recording_type == 'microphone':
+        message_key = 'recording_started_microphone'
+    elif recording_type == 'both':
+        message_key = 'recording_started_both'
+    else:
+        message_key = 'recording_started'
+    
     if duration == 'continuous':
-        print(get_message('recording_started'))
+        print(get_message(message_key))
         try:
             # Run with a very long duration, user will interrupt with Ctrl+C
             subprocess.run(
-                [f'./{RECORDER_EXECUTABLE}', output_file, '86400'],  # 24 hours max
+                [f'./{RECORDER_EXECUTABLE}', output_file, '86400', recording_type],  # 24 hours max
                 capture_output=False,  # Allow real-time output
                 text=True
             )
@@ -245,7 +274,7 @@ def run_recording(output_file: str, duration: str) -> None:
         print(get_message('running_in_progress'))
         try:
             subprocess.run(
-                [f'./{RECORDER_EXECUTABLE}', output_file, duration],
+                [f'./{RECORDER_EXECUTABLE}', output_file, duration, recording_type],
                 capture_output=False,
                 text=True
             )
@@ -292,7 +321,7 @@ def main() -> None:
         
         choice = handle_user_input()
         
-        if choice == "1":
+        if choice in ["1", "2", "3"]:
             try:
                 duration = get_duration_input()
                 output_file = generate_output_filename()
@@ -302,7 +331,15 @@ def main() -> None:
                 if not ensure_executable():
                     return
                 
-                run_recording(output_file, duration)
+                # Map choice to recording type
+                recording_types = {
+                    "1": "internal",
+                    "2": "microphone", 
+                    "3": "both"
+                }
+                recording_type = recording_types[choice]
+                
+                run_recording(output_file, duration, recording_type)
                 
             except FileNotFoundError as e:
                 print(get_message('error_message', error=str(e)))

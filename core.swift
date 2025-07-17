@@ -4,28 +4,12 @@ import AVFoundation
 
 // Global variables for signal handling
 var shouldStop = false
-var currentStream: SCStream?
-var currentWriter: AVAssetWriter?
-var currentAudioInput: AVAssetWriterInput?
 
 /// Handle SIGINT (Ctrl+C) gracefully
 func setupSignalHandler() {
     signal(SIGINT) { _ in
         print("\nReceived interrupt signal, stopping recording...")
         shouldStop = true
-        
-        // Stop the stream and finalize the writer
-        Task {
-            if let stream = currentStream {
-                try? await stream.stopCapture()
-            }
-            if let input = currentAudioInput {
-                input.markAsFinished()
-            }
-            if let writer = currentWriter {
-                await writer.finishWriting()
-            }
-        }
     }
 }
 
@@ -40,6 +24,7 @@ func recordAudio() async {
     do {
         let outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "audio.wav"
         let duration = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 10.0 : 10.0
+        let recordingType = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "internal"
         
         
         
@@ -58,15 +43,20 @@ func recordAudio() async {
         config.width = Int(display.width) 
         config.height = Int(display.height)
         
+        // Set audio capture based on recording type
+        if recordingType == "microphone" {
+            config.capturesAudio = false  // Don't capture system audio for mic-only
+        } else {
+            config.capturesAudio = true   // Capture system audio for internal or both
+        }
+        
         // Create content filter and stream
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        currentStream = stream
         
         // Set up audio writer
         let url = URL(fileURLWithPath: outputPath)
         let writer = try AVAssetWriter(outputURL: url, fileType: .wav)
-        currentWriter = writer
         
         let audioSettings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -81,7 +71,6 @@ func recordAudio() async {
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
         writer.add(audioInput)
-        currentAudioInput = audioInput
         
         // Start writing session
         writer.startWriting()
@@ -104,35 +93,61 @@ func recordAudio() async {
         }
         
         let handler = AudioHandler(input: audioInput)
-        try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: .main)
         
-        // Start recording
-        try await stream.startCapture()
-        
-        // Wait for specified duration or until interrupted
-        let startTime = Date()
-        while !shouldStop && Date().timeIntervalSince(startTime) < duration {
-            try await Task.sleep(nanoseconds: 100_000_000) // Sleep for 0.1 seconds
+        // Set up microphone recording if needed
+        var micRecorder: AVAudioRecorder?
+        if recordingType == "microphone" || recordingType == "both" {
+            let micSettings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsNonInterleaved: false,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false
+            ]
+            
+            if recordingType == "microphone" {
+                // For microphone-only, record directly to output file
+                micRecorder = try AVAudioRecorder(url: url, settings: micSettings)
+                micRecorder?.record()
+            } else {
+                // For both, we'll need to mix later (simplified approach)
+                let micURL = URL(fileURLWithPath: outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))
+                micRecorder = try AVAudioRecorder(url: micURL, settings: micSettings)
+                micRecorder?.record()
+            }
         }
         
+        // Start system audio recording if needed
+        if recordingType == "internal" || recordingType == "both" {
+            try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: .main)
+            try await stream.startCapture()
+        }
+        
+        // Wait for specified duration
+        try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        
         // Stop recording and finalize
-        if !shouldStop {
+        if recordingType == "internal" || recordingType == "both" {
             try await stream.stopCapture()
             audioInput.markAsFinished()
             await writer.finishWriting()
         }
         
-        print("Recording complete. Audio saved to \(outputPath)")
+        if recordingType == "microphone" || recordingType == "both" {
+            micRecorder?.stop()
+        }
+        
+        if recordingType == "both" {
+            print("Recording complete. System audio saved to \(outputPath)")
+            print("Microphone audio saved to \(outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))")
+        } else {
+            print("Recording complete. Audio saved to \(outputPath)")
+        }
         
     } catch {
         print("Error occurred: \(error)")
-        // Clean up on error
-        if let input = currentAudioInput {
-            input.markAsFinished()
-        }
-        if let writer = currentWriter {
-            await writer.finishWriting()
-        }
     }
 }
 
