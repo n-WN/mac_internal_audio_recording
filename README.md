@@ -1,5 +1,11 @@
 # macOS Internal Audio Recording
 
+![Python](https://img.shields.io/badge/Python-3.6+-blue?style=for-the-badge&logo=python&logoColor=white)
+![Swift](https://img.shields.io/badge/Swift-5.0+-orange?style=for-the-badge&logo=swift&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-12.0+-black?style=for-the-badge&logo=apple&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey?style=for-the-badge&logo=apple&logoColor=white)
+
 A simple command-line tool for recording internal audio, microphone input, or both simultaneously on macOS using ScreenCaptureKit.
 
 ## Features
