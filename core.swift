@@ -2,21 +2,25 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 
+/// Records system audio using ScreenCaptureKit
+/// - Parameters:
+///   - outputPath: Path for the output audio file
+///   - duration: Recording duration in seconds
 func recordAudio() async {
     do {
-        var outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "audio.wav"
-        let duration = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 10 : 10
+        let outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "audio.wav"
+        let duration = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 10.0 : 10.0
         
         
         
-        // 获取屏幕内容
+        // Get screen content for audio capture
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else { 
             print("No display found to capture.")
             return 
         }
         
-        // 配置
+        // Configure stream for audio capture
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.sampleRate = 48000
@@ -24,11 +28,11 @@ func recordAudio() async {
         config.width = Int(display.width) 
         config.height = Int(display.height)
         
-        // 创建过滤器和流
+        // Create content filter and stream
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         
-        // 音频写入器
+        // Set up audio writer
         let url = URL(fileURLWithPath: outputPath)
         let writer = try AVAssetWriter(outputURL: url, fileType: .wav)
         
@@ -46,14 +50,13 @@ func recordAudio() async {
         audioInput.expectsMediaDataInRealTime = true
         writer.add(audioInput)
         
-        // 开始写入
+        // Start writing session
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
         
-        // 处理器
+        // Audio output handler
         class AudioHandler: NSObject, SCStreamOutput {
             let input: AVAssetWriterInput
-            var started = false
             
             init(input: AVAssetWriterInput) {
                 self.input = input
@@ -70,21 +73,21 @@ func recordAudio() async {
         let handler = AudioHandler(input: audioInput)
         try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: .main)
         
-        // 开始录制
+        // Start recording
         try await stream.startCapture()
         
-        // 等待
+        // Wait for specified duration
         try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
         
-        // 停止
+        // Stop recording and finalize
         try await stream.stopCapture()
         audioInput.markAsFinished()
         await writer.finishWriting()
         
-        print("Recording complete. Audio saved to {outputPath}")
+        print("Recording complete. Audio saved to \(outputPath)")
         
-    } catch let error_val {
-        print("Error occurred: {error_val}")
+    } catch {
+        print("Error occurred: \(error)")
     }
 }
 
