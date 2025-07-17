@@ -21,6 +21,7 @@ import subprocess
 import os
 from datetime import datetime
 import locale
+import sys
 from typing import Dict, Any
 
 # --- Configuration ---
@@ -133,6 +134,74 @@ MESSAGES: Dict[str, Dict[str, str]] = {
     }
 }
 
+def detect_system_language() -> str:
+    """Detect system language using multiple methods.
+    
+    Returns:
+        Language code (e.g., 'en', 'zh')
+    """
+    # Method 1: Try current locale first (recommended approach)
+    try:
+        lang, _ = locale.getlocale()
+        if lang:
+            return lang.split('_')[0].lower()
+    except (AttributeError, ValueError, locale.Error):
+        pass
+    
+    # Method 2: Try setting locale to system default and check again
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+        lang, _ = locale.getlocale()
+        if lang:
+            return lang.split('_')[0].lower()
+    except (AttributeError, ValueError, locale.Error):
+        pass
+    
+    # Method 3: Try different locale categories
+    for category in [locale.LC_MESSAGES, locale.LC_TIME, locale.LC_CTYPE]:
+        try:
+            lang, _ = locale.getlocale(category)
+            if lang:
+                return lang.split('_')[0].lower()
+        except (AttributeError, ValueError, locale.Error):
+            continue
+    
+    # Method 4: Check environment variables
+    for env_var in ['LANG', 'LC_ALL', 'LC_MESSAGES', 'LANGUAGE']:
+        try:
+            lang = os.environ.get(env_var)
+            if lang:
+                # Extract language code from formats like 'zh_CN.UTF-8'
+                lang_code = lang.split('_')[0].split('.')[0].lower()
+                if lang_code and lang_code.isalpha():
+                    return lang_code
+        except (AttributeError, ValueError):
+            continue
+    
+    # Method 5: macOS specific - check system preferences
+    if sys.platform == 'darwin':
+        try:
+            result = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleLanguages'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout:
+                # Parse output like: ("zh-Hans-CN", "en-CN")
+                import re
+                languages = re.findall(r'"([^"]+)"', result.stdout)
+                if languages:
+                    first_lang = languages[0].split('-')[0].lower()
+                    if first_lang and first_lang.isalpha():
+                        return first_lang
+        except (subprocess.SubprocessError, subprocess.TimeoutExpired, ImportError):
+            pass
+    
+    # Default fallback
+    return 'en'
+
+
 def get_message(key: str, **kwargs: Any) -> str:
     """Get a translated message based on the current locale.
     
@@ -144,18 +213,40 @@ def get_message(key: str, **kwargs: Any) -> str:
         Formatted message string in the appropriate language
     """
     try:
-        lang, _ = locale.getlocale()
-        if lang is None:
-            locale.setlocale(locale.LC_ALL, '')
-            lang, _ = locale.getlocale()
+        lang_code = detect_system_language()
+        
+        # Handle Chinese language variants
+        if lang_code == 'zh':
+            # Check for specific Chinese variants
+            try:
+                lang, _ = locale.getlocale()
+                if lang and ('CN' in lang or 'Hans' in lang):
+                    lang_code = 'zh_CN'
+                elif lang and ('TW' in lang or 'HK' in lang or 'Hant' in lang):
+                    lang_code = 'zh_CN'  # Could be extended for Traditional Chinese
+                else:
+                    lang_code = 'zh_CN'  # Default to Simplified Chinese
+            except (AttributeError, ValueError, locale.Error):
+                lang_code = 'zh_CN'
+        
+        # Get messages for detected language, fallback to English
+        messages = MESSAGES.get(lang_code, MESSAGES['en'])
+        
+        # Get specific message, fallback to English, then show missing key
+        message = messages.get(key)
+        if message is None:
+            message = MESSAGES['en'].get(key)
+            if message is None:
+                message = f"MISSING_TRANSLATION_{key}"
+        
+        return message.format(**kwargs)
+        
     except Exception:
-        lang = 'en'
-
-    lang_code = lang.split('_')[0] if lang else 'en'
-    messages = MESSAGES.get(lang_code, MESSAGES['en'])
-    
-    message = messages.get(key, MESSAGES['en'].get(key, f"MISSING_TRANSLATION_{key}"))
-    return message.format(**kwargs)
+        # Ultimate fallback with error logging
+        try:
+            return MESSAGES['en'].get(key, f"MISSING_TRANSLATION_{key}").format(**kwargs)
+        except Exception:
+            return f"TRANSLATION_ERROR_{key}"
 
 def verify_swift_source() -> str:
     """Verify Swift source file exists.

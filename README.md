@@ -22,7 +22,7 @@ A simple command-line tool for recording internal audio, microphone input, or bo
 ## Requirements
 
 - macOS 12.0 or later
-- Python 3.6+
+- Python 3.6+ (standard library only - no third-party dependencies required)
 - Xcode Command Line Tools (for Swift compiler)
 
 ## Installation
@@ -92,11 +92,14 @@ Recording microphone. Press Ctrl+C to stop and save.
 
 ```
 mac_internal_audio_recording/
-├── my_screen_capture_kit.py    # Main Python script
+├── my_screen_capture_kit.py    # Main Python script (no dependencies required)
 ├── core.swift                  # Swift recording implementation
+├── recorder                    # Compiled Swift executable (auto-generated)
 ├── output/                     # Output folder for recordings
 │   ├── recording_20240101_120000.wav
 │   └── recording_20240101_120000_mic.wav
+├── tests/                      # Test files
+│   └── performance_test.py     # Performance testing script
 └── README.md
 ```
 
@@ -104,6 +107,7 @@ mac_internal_audio_recording/
 
 - Uses Swift's `ScreenCaptureKit` framework for internal audio capture
 - Uses `AVAudioRecorder` for microphone recording
+- **Zero dependencies**: Main Python script uses only standard library modules
 - Automatic compilation of Swift code with timestamp-based caching
 - Graceful interrupt handling with proper resource cleanup
 - WAV format output at 48kHz, 16-bit, stereo
