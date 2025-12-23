@@ -44,6 +44,47 @@ Run the main script:
 python my_screen_capture_kit.py
 ```
 
+## Realtime sync (localhost)
+
+本项目新增了一个精简的实时发送器 `realtime_audio_sender.py`，用于把音频实时同步到本地对端平台 `av_platform`（TCP 自定义协议）。
+
+1) 启动对端平台：
+
+```bash
+TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python3 -m av_platform.server --host 127.0.0.1 --port 8765 --out ./av_platform/received --token "$TOKEN"
+```
+
+2) 联调模式（无需权限/无需 Swift，发送实时正弦波）：
+
+```bash
+python3 -m mac_internal_audio_recording.realtime_audio_sender --host 127.0.0.1 --port 8765 --token "$TOKEN" --test-sine --duration 3
+```
+
+3) 实际录制并实时同步（需要屏幕录制/麦克风权限）：
+
+```bash
+python3 -m mac_internal_audio_recording.realtime_audio_sender --host 127.0.0.1 --port 8765 --token "$TOKEN" --recording-type internal --duration 5
+```
+
+持续实时同步（类似通话，直到 Ctrl+C）：
+
+```bash
+python3 -m mac_internal_audio_recording.realtime_audio_sender --host 127.0.0.1 --port 8765 --token "$TOKEN" --recording-type internal --duration 0
+```
+
+与定时截图同时持续（推荐，从仓库根目录运行）：
+
+```bash
+python3 realtime_session.py --test
+```
+
+## TLS（可选）
+
+如果对端不在 localhost，请使用 TLS（`--tls`）或 SSH 隧道，避免明文被窃听。
+
+`realtime_audio_sender` 在 `--host` 非 localhost 时默认拒绝明文连接；如确实需要明文联调，请显式加 `--unsafe-plain`。
+
 ### Recording Options
 
 1. **Internal audio only** - Records system sounds, music, videos, etc.

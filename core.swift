@@ -21,7 +21,7 @@ import ScreenCaptureKit
 import AVFoundation
 
 // Global variables for signal handling
-var shouldStop = false
+nonisolated(unsafe) var shouldStop = false
 
 /// Handle SIGINT (Ctrl+C) gracefully
 func setupSignalHandler() {
@@ -143,8 +143,17 @@ func recordAudio() async {
             try await stream.startCapture()
         }
         
-        // Wait for specified duration
-        try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        // Wait for duration (duration<=0 means continuous) or Ctrl+C
+        if duration <= 0 {
+            while !shouldStop {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+        } else {
+            let startTime = Date()
+            while !shouldStop && Date().timeIntervalSince(startTime) < duration {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+        }
         
         // Stop recording and finalize
         if recordingType == "internal" || recordingType == "both" {
