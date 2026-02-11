@@ -23,11 +23,40 @@ import AVFoundation
 // Global variables for signal handling
 nonisolated(unsafe) var shouldStop = false
 
+enum RecorderError: LocalizedError {
+    case microphonePermissionDenied
+    case microphoneRecordStartFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .microphonePermissionDenied:
+            return "Microphone permission denied. Grant microphone access to the recorder host process."
+        case .microphoneRecordStartFailed:
+            return "Failed to start microphone recorder."
+        }
+    }
+}
+
 /// Handle SIGINT (Ctrl+C) gracefully
 func setupSignalHandler() {
     signal(SIGINT) { _ in
         print("\nReceived interrupt signal, stopping recording...")
         shouldStop = true
+    }
+}
+
+func ensureMicrophonePermission() async throws {
+    let status = AVCaptureDevice.authorizationStatus(for: .audio)
+    switch status {
+    case .authorized:
+        return
+    case .notDetermined:
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        if !granted {
+            throw RecorderError.microphonePermissionDenied
+        }
+    default:
+        throw RecorderError.microphonePermissionDenied
     }
 }
 
@@ -115,6 +144,7 @@ func recordAudio() async {
         // Set up microphone recording if needed
         var micRecorder: AVAudioRecorder?
         if recordingType == "microphone" || recordingType == "both" {
+            try await ensureMicrophonePermission()
             let micSettings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatLinearPCM),
                 AVSampleRateKey: 48000,
@@ -128,12 +158,22 @@ func recordAudio() async {
             if recordingType == "microphone" {
                 // For microphone-only, record directly to output file
                 micRecorder = try AVAudioRecorder(url: url, settings: micSettings)
-                micRecorder?.record()
+                micRecorder?.prepareToRecord()
+                micRecorder?.isMeteringEnabled = true
+                let ok = micRecorder?.record() ?? false
+                if !ok {
+                    throw RecorderError.microphoneRecordStartFailed
+                }
             } else {
                 // For both, we'll need to mix later (simplified approach)
                 let micURL = URL(fileURLWithPath: outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))
                 micRecorder = try AVAudioRecorder(url: micURL, settings: micSettings)
-                micRecorder?.record()
+                micRecorder?.prepareToRecord()
+                micRecorder?.isMeteringEnabled = true
+                let ok = micRecorder?.record() ?? false
+                if !ok {
+                    throw RecorderError.microphoneRecordStartFailed
+                }
             }
         }
         
