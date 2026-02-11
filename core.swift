@@ -560,7 +560,17 @@ func recordAudio(options: RecorderOptions) async throws {
     }
 
     if captureSystem {
-        try await stream?.stopCapture()
+        if let stream {
+            do {
+                try await stream.stopCapture()
+            } catch {
+                let nsErr = error as NSError
+                // Ignore stop-time errors when stream is already stopped/invalid.
+                if !(nsErr.domain.contains("SCStreamErrorDomain") && nsErr.code == -3808) {
+                    throw error
+                }
+            }
+        }
         audioInput?.markAsFinished()
         await writer?.finishWriting()
     }
