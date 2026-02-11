@@ -3,46 +3,146 @@
 //  macOS Internal Audio Recording
 //
 //  A Swift implementation for recording system audio and microphone input
-//  using ScreenCaptureKit and AVFoundation frameworks.
-//
-//  Copyright (c) 2025 n-WN
-//  Repository: https://github.com/n-WN/mac_internal_audio_recording
-//
-//  This program is free software: you can redistribute it and/or modify
-//  it under the terms of the MIT License.
-//
-//  This program is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+//  using ScreenCaptureKit, AVFoundation, and CoreAudio.
 //
 
+import AVFoundation
+import CoreAudio
 import Foundation
 import ScreenCaptureKit
-import AVFoundation
 
-// Global variables for signal handling
 nonisolated(unsafe) var shouldStop = false
 
 enum RecorderError: LocalizedError {
+    case badArguments(String)
+    case unsupportedRecordingType(String)
     case microphonePermissionDenied
     case microphoneRecordStartFailed
+    case noDisplayFound
+    case micDeviceNotFound(String)
+    case audioHardwareError(String)
 
     var errorDescription: String? {
         switch self {
+        case .badArguments(let msg):
+            return "Bad arguments: \(msg)"
+        case .unsupportedRecordingType(let v):
+            return "Unsupported recording type: \(v)"
         case .microphonePermissionDenied:
-            return "Microphone permission denied. Grant microphone access to the recorder host process."
+            return "Microphone permission denied."
         case .microphoneRecordStartFailed:
             return "Failed to start microphone recorder."
+        case .noDisplayFound:
+            return "No display found for system audio capture."
+        case .micDeviceNotFound(let selector):
+            return "Microphone device not found for selector: \(selector)"
+        case .audioHardwareError(let msg):
+            return "Audio hardware error: \(msg)"
         }
     }
 }
 
-/// Handle SIGINT (Ctrl+C) gracefully
+struct RecorderOptions {
+    var outputPath: String = "audio.wav"
+    var duration: Double = 10.0
+    var recordingType: String = "internal"
+    var micDeviceSelector: String = ""
+    var listMicsJSON: Bool = false
+    var testMicsJSON: Bool = false
+    var testDuration: Double = 1.5
+    var testSettle: Double = 0.25
+}
+
+struct MicDeviceInfo: Codable {
+    var index: Int
+    var uid: String
+    var name: String
+    var input_channels: Int
+    var is_default: Bool
+    var device_id: UInt32
+}
+
+struct MicTestResult: Codable {
+    var index: Int
+    var uid: String
+    var name: String
+    var input_channels: Int
+    var ok: Bool
+    var bytes: Int
+    var rms: Double
+    var error: String
+}
+
 func setupSignalHandler() {
     signal(SIGINT) { _ in
-        print("\nReceived interrupt signal, stopping recording...")
         shouldStop = true
     }
+}
+
+func parseOptions() throws -> RecorderOptions {
+    var options = RecorderOptions()
+    let args = Array(CommandLine.arguments.dropFirst())
+    var positional: [String] = []
+
+    var i = 0
+    while i < args.count {
+        let arg = args[i]
+        switch arg {
+        case "--list-mics-json":
+            options.listMicsJSON = true
+        case "--test-mics-json":
+            options.testMicsJSON = true
+        case "--mic-device":
+            guard i + 1 < args.count else {
+                throw RecorderError.badArguments("--mic-device requires a value")
+            }
+            i += 1
+            options.micDeviceSelector = args[i]
+        case "--test-duration":
+            guard i + 1 < args.count else {
+                throw RecorderError.badArguments("--test-duration requires a value")
+            }
+            i += 1
+            options.testDuration = Double(args[i]) ?? options.testDuration
+        case "--test-settle":
+            guard i + 1 < args.count else {
+                throw RecorderError.badArguments("--test-settle requires a value")
+            }
+            i += 1
+            options.testSettle = Double(args[i]) ?? options.testSettle
+        default:
+            positional.append(arg)
+        }
+        i += 1
+    }
+
+    if options.listMicsJSON || options.testMicsJSON {
+        return options
+    }
+
+    if positional.count > 0 {
+        options.outputPath = positional[0]
+    }
+    if positional.count > 1 {
+        options.duration = Double(positional[1]) ?? options.duration
+    }
+    if positional.count > 2 {
+        options.recordingType = positional[2]
+    }
+
+    let normalized = options.recordingType.lowercased()
+    if !["internal", "microphone", "both"].contains(normalized) {
+        throw RecorderError.unsupportedRecordingType(options.recordingType)
+    }
+    options.recordingType = normalized
+    return options
+}
+
+func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(value)
+    return String(data: data, encoding: .utf8) ?? "{}"
 }
 
 func ensureMicrophonePermission() async throws {
@@ -60,162 +160,444 @@ func ensureMicrophonePermission() async throws {
     }
 }
 
-/// Records system audio using ScreenCaptureKit
-/// - Parameters:
-///   - outputPath: Path for the output audio file
-///   - duration: Recording duration in seconds
-func recordAudio() async {
-    // Setup signal handler
-    setupSignalHandler()
-    
-    do {
-        let outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "audio.wav"
-        let duration = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 10.0 : 10.0
-        let recordingType = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "internal"
-        
-        
-        
-        // Get screen content for audio capture
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first else { 
-            print("No display found to capture.")
-            return 
+func allAudioDeviceIDs() throws -> [AudioDeviceID] {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var size: UInt32 = 0
+    var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size)
+    if status != noErr {
+        throw RecorderError.audioHardwareError("query devices size failed: \(status)")
+    }
+    let count = Int(size) / MemoryLayout<AudioDeviceID>.stride
+    if count <= 0 {
+        return []
+    }
+    var ids = Array(repeating: AudioDeviceID(0), count: count)
+    status = ids.withUnsafeMutableBufferPointer { buf in
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            buf.baseAddress!
+        )
+    }
+    if status != noErr {
+        throw RecorderError.audioHardwareError("query devices failed: \(status)")
+    }
+    return ids
+}
+
+func deviceInputChannels(deviceID: AudioDeviceID) -> Int {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioDevicePropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var size: UInt32 = 0
+    let statusSize = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size)
+    if statusSize != noErr || size == 0 {
+        return 0
+    }
+    let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { raw.deallocate() }
+    let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, raw)
+    if status != noErr {
+        return 0
+    }
+    let bufferList = raw.assumingMemoryBound(to: AudioBufferList.self)
+    let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+    var total = 0
+    for b in buffers {
+        total += Int(b.mNumberChannels)
+    }
+    return total
+}
+
+func deviceStringProperty(deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String {
+    var address = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var value: Unmanaged<CFString>? = nil
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
+    if status != noErr {
+        return ""
+    }
+    return (value?.takeUnretainedValue() as String?) ?? ""
+}
+
+func defaultInputDeviceID() -> AudioDeviceID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var devID: AudioDeviceID = 0
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devID)
+    if status != noErr || devID == 0 {
+        return nil
+    }
+    return devID
+}
+
+func setDefaultInputDeviceID(_ deviceID: AudioDeviceID) throws {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var dev = deviceID
+    let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, size, &dev)
+    if status != noErr {
+        throw RecorderError.audioHardwareError("set default input failed: \(status)")
+    }
+}
+
+func listMicDevices() throws -> [MicDeviceInfo] {
+    let ids = try allAudioDeviceIDs()
+    let defaultID = defaultInputDeviceID()
+    var out: [MicDeviceInfo] = []
+    var idx = 0
+    for dev in ids {
+        let ch = deviceInputChannels(deviceID: dev)
+        if ch <= 0 {
+            continue
         }
-        
-        // Configure stream for audio capture
+        let uid = deviceStringProperty(deviceID: dev, selector: kAudioDevicePropertyDeviceUID)
+        let name = deviceStringProperty(deviceID: dev, selector: kAudioObjectPropertyName)
+        out.append(
+            MicDeviceInfo(
+                index: idx,
+                uid: uid,
+                name: name.isEmpty ? "AudioDevice-\(dev)" : name,
+                input_channels: ch,
+                is_default: defaultID == dev,
+                device_id: dev
+            )
+        )
+        idx += 1
+    }
+    return out
+}
+
+func chooseMicDevice(selector: String, devices: [MicDeviceInfo]) -> MicDeviceInfo? {
+    let sel = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+    if sel.isEmpty {
+        return nil
+    }
+    if let intVal = Int(sel), let hit = devices.first(where: { $0.index == intVal }) {
+        return hit
+    }
+    if let hit = devices.first(where: { $0.uid == sel }) {
+        return hit
+    }
+    let lower = sel.lowercased()
+    if let hit = devices.first(where: { $0.name.lowercased() == lower }) {
+        return hit
+    }
+    if let hit = devices.first(where: { $0.name.lowercased().contains(lower) }) {
+        return hit
+    }
+    return nil
+}
+
+func estimateWavRMS(url: URL) -> Double {
+    guard let data = try? Data(contentsOf: url), data.count > 44 else {
+        return 0.0
+    }
+    let payload = data.subdata(in: 44 ..< data.count)
+    if payload.count < 2 {
+        return 0.0
+    }
+    let sampleCount = payload.count / 2
+    let sumSq: Double = payload.withUnsafeBytes { raw in
+        let samples = raw.bindMemory(to: Int16.self)
+        if samples.isEmpty {
+            return 0.0
+        }
+        var acc = 0.0
+        for s in samples {
+            let v = Double(s)
+            acc += v * v
+        }
+        return acc
+    }
+    if sampleCount <= 0 {
+        return 0.0
+    }
+    return sqrt(sumSq / Double(sampleCount))
+}
+
+func micSettings() -> [String: Any] {
+    return [
+        AVFormatIDKey: Int(kAudioFormatLinearPCM),
+        AVSampleRateKey: 48000,
+        AVNumberOfChannelsKey: 2,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsNonInterleaved: false,
+        AVLinearPCMIsFloatKey: false,
+        AVLinearPCMIsBigEndianKey: false
+    ]
+}
+
+func runMicDeviceTests(options: RecorderOptions) async throws {
+    try await ensureMicrophonePermission()
+    let devices = try listMicDevices()
+    let originalDefault = defaultInputDeviceID()
+    defer {
+        if let originalDefault {
+            try? setDefaultInputDeviceID(originalDefault)
+        }
+    }
+
+    let tmpBase = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mic_probe_\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: tmpBase, withIntermediateDirectories: true)
+
+    var results: [MicTestResult] = []
+    for dev in devices {
+        var item = MicTestResult(
+            index: dev.index,
+            uid: dev.uid,
+            name: dev.name,
+            input_channels: dev.input_channels,
+            ok: false,
+            bytes: 0,
+            rms: 0.0,
+            error: ""
+        )
+
+        do {
+            try setDefaultInputDeviceID(dev.device_id)
+            if options.testSettle > 0 {
+                let nanos = UInt64(max(0.0, options.testSettle) * 1_000_000_000.0)
+                try await Task.sleep(nanoseconds: nanos)
+            }
+            let outURL = tmpBase.appendingPathComponent("mic_\(dev.index).wav")
+            let recorder = try AVAudioRecorder(url: outURL, settings: micSettings())
+            recorder.prepareToRecord()
+            let started = recorder.record()
+            if !started {
+                throw RecorderError.microphoneRecordStartFailed
+            }
+            let nanos = UInt64(max(0.2, options.testDuration) * 1_000_000_000.0)
+            try await Task.sleep(nanoseconds: nanos)
+            recorder.stop()
+
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: outURL.path),
+               let sizeNum = attrs[.size] as? NSNumber
+            {
+                item.bytes = sizeNum.intValue
+            }
+            item.rms = estimateWavRMS(url: outURL)
+            item.ok = item.bytes > 44 && item.rms > 0.0
+        } catch {
+            item.ok = false
+            item.error = String(describing: error)
+        }
+        results.append(item)
+    }
+
+    let payload: [String: Any] = [
+        "ok": true,
+        "count": results.count,
+        "duration_s": options.testDuration,
+        "settle_s": options.testSettle,
+        "results": results.map { r in
+            [
+                "index": r.index,
+                "uid": r.uid,
+                "name": r.name,
+                "input_channels": r.input_channels,
+                "ok": r.ok,
+                "bytes": r.bytes,
+                "rms": r.rms,
+                "error": r.error
+            ] as [String: Any]
+        }
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    print(String(data: data, encoding: .utf8) ?? "{\"ok\":false}")
+}
+
+func emitMicListJSON() throws {
+    let list = try listMicDevices()
+    let payload: [String: Any] = [
+        "ok": true,
+        "count": list.count,
+        "devices": list.map { d in
+            [
+                "index": d.index,
+                "uid": d.uid,
+                "name": d.name,
+                "input_channels": d.input_channels,
+                "is_default": d.is_default
+            ] as [String: Any]
+        }
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    print(String(data: data, encoding: .utf8) ?? "{\"ok\":false}")
+}
+
+final class AudioHandler: NSObject, SCStreamOutput {
+    let input: AVAssetWriterInput
+
+    init(input: AVAssetWriterInput) {
+        self.input = input
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio else { return }
+        if input.isReadyForMoreMediaData {
+            input.append(sampleBuffer)
+        }
+    }
+}
+
+func recordAudio(options: RecorderOptions) async throws {
+    setupSignalHandler()
+
+    let captureSystem = options.recordingType == "internal" || options.recordingType == "both"
+    let captureMic = options.recordingType == "microphone" || options.recordingType == "both"
+    let outputURL = URL(fileURLWithPath: options.outputPath)
+
+    var stream: SCStream?
+    var writer: AVAssetWriter?
+    var audioInput: AVAssetWriterInput?
+    var micRecorder: AVAudioRecorder?
+    var selectedMic: MicDeviceInfo?
+    var restoreDefaultInput: AudioDeviceID?
+
+    if captureMic {
+        try await ensureMicrophonePermission()
+        if !options.micDeviceSelector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let devices = try listMicDevices()
+            guard let hit = chooseMicDevice(selector: options.micDeviceSelector, devices: devices) else {
+                throw RecorderError.micDeviceNotFound(options.micDeviceSelector)
+            }
+            let current = defaultInputDeviceID()
+            if current != hit.device_id {
+                restoreDefaultInput = current
+                try setDefaultInputDeviceID(hit.device_id)
+            }
+            selectedMic = hit
+            print("Mic selected: index=\(hit.index) uid=\(hit.uid) name=\(hit.name) channels=\(hit.input_channels)")
+        }
+    }
+
+    defer {
+        if let restoreDefaultInput {
+            try? setDefaultInputDeviceID(restoreDefaultInput)
+        }
+    }
+
+    if captureSystem {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first else {
+            throw RecorderError.noDisplayFound
+        }
+
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.sampleRate = 48000
         config.channelCount = 2
-        config.width = Int(display.width) 
+        config.width = Int(display.width)
         config.height = Int(display.height)
-        
-        // Set audio capture based on recording type
-        if recordingType == "microphone" {
-            config.capturesAudio = false  // Don't capture system audio for mic-only
-        } else {
-            config.capturesAudio = true   // Capture system audio for internal or both
-        }
-        
-        // Create content filter and stream
+
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        
-        // Set up audio writer
-        let url = URL(fileURLWithPath: outputPath)
-        let writer = try AVAssetWriter(outputURL: url, fileType: .wav)
-        
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatLinearPCM),
-            AVSampleRateKey: 48000,
-            AVNumberOfChannelsKey: 2,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsNonInterleaved: false,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false
-        ]
-        
-        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-        audioInput.expectsMediaDataInRealTime = true
-        writer.add(audioInput)
-        
-        // Start writing session
-        writer.startWriting()
-        writer.startSession(atSourceTime: .zero)
-        
-        // Audio output handler
-        class AudioHandler: NSObject, SCStreamOutput {
-            let input: AVAssetWriterInput
-            
-            init(input: AVAssetWriterInput) {
-                self.input = input
-            }
-            
-            func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-                guard type == .audio else { return }
-                if input.isReadyForMoreMediaData {
-                    input.append(sampleBuffer)
-                }
-            }
-        }
-        
-        let handler = AudioHandler(input: audioInput)
-        
-        // Set up microphone recording if needed
-        var micRecorder: AVAudioRecorder?
-        if recordingType == "microphone" || recordingType == "both" {
-            try await ensureMicrophonePermission()
-            let micSettings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 2,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsNonInterleaved: false,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsBigEndianKey: false
-            ]
-            
-            if recordingType == "microphone" {
-                // For microphone-only, record directly to output file
-                micRecorder = try AVAudioRecorder(url: url, settings: micSettings)
-                micRecorder?.prepareToRecord()
-                micRecorder?.isMeteringEnabled = true
-                let ok = micRecorder?.record() ?? false
-                if !ok {
-                    throw RecorderError.microphoneRecordStartFailed
-                }
-            } else {
-                // For both, we'll need to mix later (simplified approach)
-                let micURL = URL(fileURLWithPath: outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))
-                micRecorder = try AVAudioRecorder(url: micURL, settings: micSettings)
-                micRecorder?.prepareToRecord()
-                micRecorder?.isMeteringEnabled = true
-                let ok = micRecorder?.record() ?? false
-                if !ok {
-                    throw RecorderError.microphoneRecordStartFailed
-                }
-            }
-        }
-        
-        // Start system audio recording if needed
-        if recordingType == "internal" || recordingType == "both" {
-            try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: .main)
-            try await stream.startCapture()
-        }
-        
-        // Wait for duration (duration<=0 means continuous) or Ctrl+C
-        if duration <= 0 {
-            while !shouldStop {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
+        let s = SCStream(filter: filter, configuration: config, delegate: nil)
+
+        let w = try AVAssetWriter(outputURL: outputURL, fileType: .wav)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings())
+        input.expectsMediaDataInRealTime = true
+        w.add(input)
+        w.startWriting()
+        w.startSession(atSourceTime: .zero)
+        let handler = AudioHandler(input: input)
+        try s.addStreamOutput(handler, type: .audio, sampleHandlerQueue: .main)
+
+        stream = s
+        writer = w
+        audioInput = input
+    }
+
+    if captureMic {
+        if options.recordingType == "microphone" {
+            micRecorder = try AVAudioRecorder(url: outputURL, settings: micSettings())
         } else {
-            let startTime = Date()
-            while !shouldStop && Date().timeIntervalSince(startTime) < duration {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
+            let micURL = URL(fileURLWithPath: options.outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))
+            micRecorder = try AVAudioRecorder(url: micURL, settings: micSettings())
         }
-        
-        // Stop recording and finalize
-        if recordingType == "internal" || recordingType == "both" {
-            try await stream.stopCapture()
-            audioInput.markAsFinished()
-            await writer.finishWriting()
+        micRecorder?.prepareToRecord()
+        micRecorder?.isMeteringEnabled = true
+        let ok = micRecorder?.record() ?? false
+        if !ok {
+            throw RecorderError.microphoneRecordStartFailed
         }
-        
-        if recordingType == "microphone" || recordingType == "both" {
-            micRecorder?.stop()
+    }
+
+    if captureSystem {
+        try await stream?.startCapture()
+    }
+
+    if options.duration <= 0 {
+        while !shouldStop {
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
-        
-        if recordingType == "both" {
-            print("Recording complete. System audio saved to \(outputPath)")
-            print("Microphone audio saved to \(outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))")
-        } else {
-            print("Recording complete. Audio saved to \(outputPath)")
+    } else {
+        let startTime = Date()
+        while !shouldStop && Date().timeIntervalSince(startTime) < options.duration {
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
-        
-    } catch {
-        print("Error occurred: \(error)")
+    }
+
+    if captureSystem {
+        try await stream?.stopCapture()
+        audioInput?.markAsFinished()
+        await writer?.finishWriting()
+    }
+    if captureMic {
+        micRecorder?.stop()
+    }
+
+    if options.recordingType == "both" {
+        print("Recording complete. System audio saved to \(options.outputPath)")
+        print("Microphone audio saved to \(options.outputPath.replacingOccurrences(of: ".wav", with: "_mic.wav"))")
+    } else if options.recordingType == "microphone", let selectedMic {
+        print("Recording complete. Mic(\(selectedMic.name)) saved to \(options.outputPath)")
+    } else {
+        print("Recording complete. Audio saved to \(options.outputPath)")
     }
 }
 
-await recordAudio()
+func run() async -> Int32 {
+    do {
+        let options = try parseOptions()
+        if options.listMicsJSON {
+            try emitMicListJSON()
+            return 0
+        }
+        if options.testMicsJSON {
+            try await runMicDeviceTests(options: options)
+            return 0
+        }
+        try await recordAudio(options: options)
+        return 0
+    } catch {
+        fputs("Error occurred: \(error)\n", stderr)
+        return 1
+    }
+}
+
+let rc = await run()
+if rc != 0 {
+    Foundation.exit(rc)
+}
